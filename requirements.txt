@@ -1,0 +1,8 @@
+# 推荐依赖（根据需要可指定版本）
+pyqt5
+pillow
+opencv-python
+termcolor
+paddlepaddle  # CPU 版；若使用 GPU，请安装与 CUDA 匹配的 paddlepaddle GPU 轮子
+paddleocr
+imgviz

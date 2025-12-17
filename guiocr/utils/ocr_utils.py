@@ -9,10 +9,25 @@ Created time:2021/12/1 20:33
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QPixmap, QImage
 
-from paddleocr import PaddleOCR, draw_ocr
-from paddleocr import PPStructure, draw_structure_result, save_structure_res
+from paddleocr import PaddleOCR
+# 兼容不同 paddleocr 版本：有些版本未在顶级导出 draw_ocr 等函数
+try:
+    from paddleocr import draw_ocr
+except Exception:
+    draw_ocr = None
+
+try:
+    from paddleocr import PPStructure, draw_structure_result, save_structure_res
+except Exception:
+    PPStructure = None
+    try:
+        from paddleocr.ppstructure import draw_structure_result, save_structure_res
+    except Exception:
+        draw_structure_result = None
+        save_structure_res = None
+
 # 显示结果
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import os
 
 
@@ -71,10 +86,28 @@ class OCR_qt(QObject):
         boxes = [line[0] for line in self.result]
         txts = [line[1][0] for line in self.result]
         scores = [line[1][1] for line in self.result]
-        im_show = draw_ocr(image, boxes, txts, scores, font_path='./fonts/simfang.ttf')
-        im_show = Image.fromarray(im_show)
-        im_show.save(os.path.join(save_folder, 'result_ocr.jpg'))
-        return im_show
+        # 优先使用 paddleocr 提供的 draw_ocr（新老版本兼容），否则使用 PIL 回退实现
+        if draw_ocr is not None:
+            im_show = draw_ocr(image, boxes, txts, scores, font_path='./fonts/simfang.ttf')
+            im_show = Image.fromarray(im_show)
+            os.makedirs(save_folder, exist_ok=True)
+            im_show.save(os.path.join(save_folder, 'result_ocr.jpg'))
+            return im_show
+
+        # fallback: simple drawing using PIL
+        draw = ImageDraw.Draw(image)
+        try:
+            font = ImageFont.truetype('./fonts/simfang.ttf', 16)
+        except Exception:
+            font = None
+        for box, txt in zip(boxes, txts):
+            pts = [tuple(map(int, p)) for p in box]
+            draw.line(pts + [pts[0]], fill=(255, 0, 0), width=2)
+            pos = pts[0]
+            draw.text(pos, str(txt), fill=(0, 255, 0), font=font)
+        os.makedirs(save_folder, exist_ok=True)
+        image.save(os.path.join(save_folder, 'result_ocr.jpg'))
+        return image
 
 
 # def ocr(img_path='./imgs/11.jpg',use_angle=True,cls=True, lan="ch"):

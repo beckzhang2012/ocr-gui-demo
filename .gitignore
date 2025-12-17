@@ -1,0 +1,48 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+*.eggs/
+
+# Test / coverage
+.pytest_cache/
+htmlcov/
+
+# Logs and outputs
+*.log
+/output/
+logs/
+
+# Fonts and generated resources (if you don't want them in repo)
+fonts/
+fonts/*.ttf
+
+# Models / large files (consider using Git LFS instead if needed)
+models/
+**/models/
+
+# Others
+*.bak
+*.tmp

@@ -53,13 +53,12 @@ class OCR_qt(QObject):
 
         if load:
             print("加载模型......")
-            self.ocrinfer = PaddleOCR(use_angle_cls=use_angle,
-                            use_gpu=1,
-                            lang=lan,
-                            gpu_mem=2048,
-                            det_model_dir=f"models/det/{lan}",
-                            rec_model_dir=f"models/cls/{lan}"
-                            )  # need to run only once to download and load model into memory
+            self.ocrinfer = PaddleOCR(
+                use_angle_cls=use_angle,
+                lang=lan,
+                det_model_dir=f"models/det/{lan}",
+                rec_model_dir=f"models/cls/{lan}"
+            )  # need to run only once to download and load model into memory
 
             print("模型加载完成......")
 

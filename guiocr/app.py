@@ -14,6 +14,7 @@ import io
 import json
 import functools
 import imgviz
+import glob
 from guiocr import __appname__
 from guiocr import PY2
 from guiocr import QT5
@@ -71,6 +72,21 @@ class MainWindow(QMainWindow):
         self.processor.moveToThread(self.workThread)
         self.processor.sendResult.connect(self.onReceiveResults)
         self.workThread.started.connect(self.processor.start)
+        
+        # 批量处理线程
+        self.batchWorkThread = QThread()
+        self.batchProcessor = BatchOCRProcessor()
+        self.batchProcessor.moveToThread(self.batchWorkThread)
+        self.batchProcessor.progressUpdated.connect(self.onBatchProgressUpdated)
+        self.batchProcessor.imageProcessed.connect(self.onBatchImageProcessed)
+        self.batchProcessor.imageError.connect(self.onBatchImageError)
+        self.batchProcessor.batchComplete.connect(self.onBatchComplete)
+        self.batchWorkThread.started.connect(self.batchProcessor.start)
+        
+        # 批量处理数据
+        self.batch_results = {}
+        self.batch_errors = {}
+        self.current_batch_folder = ""
 
         # 单选按钮组
         self.checkBtnGroup = QButtonGroup(self)
@@ -91,6 +107,9 @@ class MainWindow(QMainWindow):
         # self._ui.btnBrightness.setIcon(self.getIcon("brightness_grey"))
         # self._ui.btnStartProcess.setIcon(self.getIcon("play_white"))
 
+        # 添加批量处理UI控件
+        self._addBatchProcessingUI()
+        
         # 按钮响应函数
         self._ui.btnOpenImg.clicked.connect(self.openFile)
         self._ui.btnOpenDir.clicked.connect(self.openDirDialog)
@@ -99,11 +118,15 @@ class MainWindow(QMainWindow):
         self._ui.btnStartProcess.clicked.connect(self.startProcess)
         self._ui.btnCopyAll.clicked.connect(self.copyToClipboard)
         self._ui.btnSaveAll.clicked.connect(self.saveToFile)
+        self._ui.btnBatchProcess.clicked.connect(self.startBatchProcess)
+        self._ui.btnExportResults.clicked.connect(self.exportResults)
+        self._ui.lineEditSearch.textChanged.connect(self.filterBatchResults)
         # self._ui.btnAddShape.clicked.connect(self.newShape)
         # self._ui.btnEditShape.clicked.connect(self.setEditMode)
         self._ui.listWidgetResults.itemClicked.connect(self.onItemResultClicked)
         # self._ui.listWidgetResults.itemSelectionChanged.connect(self.onItemResultClicked)
         self._ui.listWidgetResults.clear()
+        self._ui.listWidgetBatchResults.itemClicked.connect(self.onBatchItemClicked)
         # self.addResultItem(shape=None,txt="test3")
 
         # 控件布局
@@ -173,6 +196,306 @@ class MainWindow(QMainWindow):
         self.statusBar().show()
 
         # TODO 快捷键设置
+        
+    def _addBatchProcessingUI(self):
+        """添加批量处理相关的UI控件"""
+        # 添加批量处理按钮到任务配置组
+        self._ui.btnBatchProcess = QtWidgets.QPushButton(self._ui.groupBox)
+        self._ui.btnBatchProcess.setMinimumSize(QtCore.QSize(150, 35))
+        self._ui.btnBatchProcess.setFont(QtGui.QFont("Microsoft YaHei UI"))
+        self._ui.btnBatchProcess.setStyleSheet(
+            "QPushButton {\n" +
+            "background-color: rgb(0, 180, 120) ;\n" +
+            "border-radius: 5px;\n" +
+            "height: 28;\n" +
+            "text-align: center;\n" +
+            "text-decoration: none;\n" +
+            "font-size: 16px bold;\n" +
+            "margin: 2px 2px;\n" +
+            "color: white;\n" +
+            "}\n" +
+            "\n" +
+            "QPushButton:hover {\n" +
+            "background-color: white;\n" +
+            "border: 2px solid rgb(0, 180, 120);\n" +
+            "color: black\n" +
+            "}\n" +
+            "\n" +
+            "QPushButton:pressed {\n" +
+            "background-color: rgba(0, 255, 120, 40);\n" +
+            "}"
+        )
+        self._ui.btnBatchProcess.setText(self.tr("批量处理"))
+        self._ui.horizontalLayout_4.addWidget(self._ui.btnBatchProcess)
+        
+        # 添加导出按钮
+        self._ui.btnExportResults = QtWidgets.QPushButton(self._ui.groupBox)
+        self._ui.btnExportResults.setMinimumSize(QtCore.QSize(150, 35))
+        self._ui.btnExportResults.setFont(QtGui.QFont("Microsoft YaHei UI"))
+        self._ui.btnExportResults.setStyleSheet(
+            "QPushButton {\n" +
+            "background-color: rgb(255, 140, 0) ;\n" +
+            "border-radius: 5px;\n" +
+            "height: 28;\n" +
+            "text-align: center;\n" +
+            "text-decoration: none;\n" +
+            "font-size: 16px bold;\n" +
+            "margin: 2px 2px;\n" +
+            "color: white;\n" +
+            "}\n" +
+            "\n" +
+            "QPushButton:hover {\n" +
+            "background-color: white;\n" +
+            "border: 2px solid rgb(255, 140, 0);\n" +
+            "color: black\n" +
+            "}\n" +
+            "\n" +
+            "QPushButton:pressed {\n" +
+            "background-color: rgba(255, 140, 0, 40);\n" +
+            "}"
+        )
+        self._ui.btnExportResults.setText(self.tr("导出结果"))
+        self._ui.horizontalLayout_4.addWidget(self._ui.btnExportResults)
+        
+        # 添加进度条
+        self._ui.progressBar = QtWidgets.QProgressBar(self._ui.groupBox)
+        self._ui.progressBar.setObjectName("progressBar")
+        self._ui.verticalLayout_4.addWidget(self._ui.progressBar)
+        
+        # 添加批量结果列表
+        self._ui.tabBatchResults = QtWidgets.QWidget()
+        self._ui.tabBatchResults.setObjectName("tabBatchResults")
+        self._ui.verticalLayoutBatch = QtWidgets.QVBoxLayout(self._ui.tabBatchResults)
+        self._ui.verticalLayoutBatch.setObjectName("verticalLayoutBatch")
+        
+        # 添加搜索框
+        self._ui.lineEditSearch = QtWidgets.QLineEdit(self._ui.tabBatchResults)
+        self._ui.lineEditSearch.setPlaceholderText(self.tr("搜索识别结果..."))
+        self._ui.verticalLayoutBatch.addWidget(self._ui.lineEditSearch)
+        
+        # 添加批量结果列表
+        self._ui.listWidgetBatchResults = QtWidgets.QListWidget(self._ui.tabBatchResults)
+        self._ui.listWidgetBatchResults.setObjectName("listWidgetBatchResults")
+        self._ui.verticalLayoutBatch.addWidget(self._ui.listWidgetBatchResults)
+        
+        # 添加批量结果统计信息
+        self._ui.labelBatchStats = QtWidgets.QLabel(self._ui.tabBatchResults)
+        self._ui.labelBatchStats.setText(self.tr("批量处理统计: 0张成功, 0张失败, 总计0张"))
+        self._ui.verticalLayoutBatch.addWidget(self._ui.labelBatchStats)
+        
+        # 将新标签页添加到标签页控件
+        self._ui.tabWidgetResult.addTab(self._ui.tabBatchResults, self.tr("批量结果"))
+        
+    def startBatchProcess(self):
+        """开始批量处理"""
+        folder = QtWidgets.QFileDialog.getExistingDirectory(self, self.tr("选择图片文件夹"), self.lastOpenDir)
+        if not folder:
+            return
+        
+        self.current_batch_folder = folder
+        self.lastOpenDir = folder
+        
+        # 获取所有图片文件
+        image_extensions = ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tiff", "*.gif"]
+        image_paths = []
+        for ext in image_extensions:
+            image_paths.extend(glob.glob(os.path.join(folder, ext)))
+            image_paths.extend(glob.glob(os.path.join(folder, ext.upper())))
+        
+        if not image_paths:
+            QMessageBox.information(self, self.tr("提示"), self.tr("该文件夹中没有找到支持的图片文件"))
+            return
+        
+        # 清空之前的结果
+        self.batch_results.clear()
+        self.batch_errors.clear()
+        self._ui.listWidgetBatchResults.clear()
+        self._ui.progressBar.setValue(0)
+        
+        # 设置批量任务
+        lan = self._ui.comboBoxLanguage.currentText()
+        self.batchProcessor.set_task(image_paths, lan=lan)
+        
+        # 启动批量处理线程
+        if not self.batchWorkThread.isRunning():
+            self.batchWorkThread.start()
+        else:
+            self.batchWorkThread.quit()
+            self.batchWorkThread.wait()
+            self.batchWorkThread.start()
+        
+        self.statusBar().showMessage(self.tr("开始批量处理..."))
+        
+    def onBatchProgressUpdated(self, current, total):
+        """批量处理进度更新"""
+        progress = int((current / total) * 100)
+        self._ui.progressBar.setValue(progress)
+        self.statusBar().showMessage(self.tr(f"处理进度: {current}/{total} ({progress}%)"))
+        
+    def onBatchImageProcessed(self, img_path, result, confidence):
+        """单个图片处理完成"""
+        self.batch_results[img_path] = {"result": result, "confidence": confidence}
+        
+        # 添加到批量结果列表
+        filename = os.path.basename(img_path)
+        item_text = f"{filename} - 置信度: {confidence:.2f}"
+        item = QListWidgetItem(item_text)
+        item.setData(QtCore.Qt.UserRole, img_path)
+        self._ui.listWidgetBatchResults.addItem(item)
+        
+    def onBatchImageError(self, img_path, error_msg):
+        """单个图片处理错误"""
+        self.batch_errors[img_path] = error_msg
+        
+        # 添加到批量结果列表（标记为错误）
+        filename = os.path.basename(img_path)
+        item_text = f"{filename} - [错误: {error_msg}]"
+        item = QListWidgetItem(item_text)
+        item.setData(QtCore.Qt.UserRole, img_path)
+        item.setForeground(QtGui.QColor(255, 0, 0))
+        self._ui.listWidgetBatchResults.addItem(item)
+        
+    def onBatchComplete(self, final_result):
+        """批量处理完成"""
+        self._ui.progressBar.setValue(100)
+        self.statusBar().showMessage(self.tr("批量处理完成!"))
+        
+        # 更新统计信息
+        stats_text = self.tr(f"批量处理统计: {final_result['success']}张成功, {final_result['failed']}张失败, 总计{final_result['total']}张")
+        self._ui.labelBatchStats.setText(stats_text)
+        
+        # 显示完成提示
+        QMessageBox.information(self, self.tr("批量处理完成"), stats_text)
+        
+    def onBatchItemClicked(self, item):
+        """批量结果列表项点击事件"""
+        img_path = item.data(QtCore.Qt.UserRole)
+        if img_path in self.batch_results:
+            # 显示该图片的识别结果
+            result = self.batch_results[img_path]["result"]
+            self._displayBatchResult(result)
+        
+    def _displayBatchResult(self, result):
+        """显示批量处理的单个结果"""
+        self._ui.listWidgetResults.clear()
+        if result:
+            for line in result:
+                txt = line[1][0]
+                score = line[1][1]
+                self.addResultItem(shape=None, txt=f"{txt} (置信度: {score:.2f})")
+        
+    def filterBatchResults(self, search_text):
+        """根据搜索文本筛选批量结果"""
+        for i in range(self._ui.listWidgetBatchResults.count()):
+            item = self._ui.listWidgetBatchResults.item(i)
+            item_text = item.text()
+            img_path = item.data(QtCore.Qt.UserRole)
+            
+            # 搜索文件名和识别文本
+            match = False
+            if search_text.lower() in item_text.lower():
+                match = True
+            elif img_path in self.batch_results:
+                result = self.batch_results[img_path]["result"]
+                for line in result:
+                    if search_text.lower() in line[1][0].lower():
+                        match = True
+                        break
+            
+            item.setHidden(not match)
+            
+    def exportResults(self):
+        """导出批量处理结果为Excel或CSV"""
+        if not self.batch_results and not self.batch_errors:
+            QMessageBox.warning(self, self.tr("警告"), self.tr("没有可导出的结果"))
+            return
+        
+        # 选择导出格式
+        export_format, ok = QtWidgets.QInputDialog.getItem(
+            self, self.tr("选择导出格式"), self.tr("请选择导出文件格式:"),
+            ["Excel (.xlsx)", "CSV (.csv)"], 0, False
+        )
+        
+        if not ok:
+            return
+        
+        # 选择保存路径
+        if export_format == "Excel (.xlsx)":
+            file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, self.tr("导出为Excel"), self.lastOpenDir, "Excel Files (*.xlsx)"
+            )
+            if file_path:
+                self._exportToExcel(file_path)
+        else:
+            file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, self.tr("导出为CSV"), self.lastOpenDir, "CSV Files (*.csv)"
+            )
+            if file_path:
+                self._exportToCSV(file_path)
+                
+    def _exportToExcel(self, file_path):
+        """导出结果到Excel文件"""
+        try:
+            import openpyxl
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "OCR Results"
+            
+            # 写入表头
+            ws.append(["图片路径", "图片名称", "识别文本", "置信度", "状态"])
+            
+            # 写入成功处理的结果
+            for img_path, data in self.batch_results.items():
+                filename = os.path.basename(img_path)
+                result = data["result"]
+                confidence = data["confidence"]
+                
+                for line in result:
+                    text = line[1][0]
+                    score = line[1][1]
+                    ws.append([img_path, filename, text, score, "成功"])
+            
+            # 写入错误结果
+            for img_path, error_msg in self.batch_errors.items():
+                filename = os.path.basename(img_path)
+                ws.append([img_path, filename, "", "", f"错误: {error_msg}"])
+            
+            wb.save(file_path)
+            QMessageBox.information(self, self.tr("导出成功"), self.tr(f"结果已成功导出到: {file_path}"))
+        except ImportError:
+            QMessageBox.warning(self, self.tr("错误"), self.tr("请安装openpyxl库: pip install openpyxl"))
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("导出失败"), str(e))
+            
+    def _exportToCSV(self, file_path):
+        """导出结果到CSV文件"""
+        try:
+            import csv
+            with open(file_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                writer = csv.writer(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+                
+                # 写入表头
+                writer.writerow(["图片路径", "图片名称", "识别文本", "置信度", "状态"])
+                
+                # 写入成功处理的结果
+                for img_path, data in self.batch_results.items():
+                    filename = os.path.basename(img_path)
+                    result = data["result"]
+                    confidence = data["confidence"]
+                    
+                    for line in result:
+                        text = line[1][0]
+                        score = line[1][1]
+                        writer.writerow([img_path, filename, text, score, "成功"])
+                
+                # 写入错误结果
+                for img_path, error_msg in self.batch_errors.items():
+                    filename = os.path.basename(img_path)
+                    writer.writerow([img_path, filename, "", "", f"错误: {error_msg}"])
+            
+            QMessageBox.information(self, self.tr("导出成功"), self.tr(f"结果已成功导出到: {file_path}"))
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("导出失败"), str(e))
 
     def _initActions(self):
         # Actions

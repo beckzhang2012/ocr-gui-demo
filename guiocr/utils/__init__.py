@@ -26,4 +26,4 @@ from .qt import distance
 from .qt import distancetoline
 from .qt import fmtShortcut
 
-from .ocr_utils import OCR_qt
+from .ocr_utils import OCR_qt, BatchOCRProcessor

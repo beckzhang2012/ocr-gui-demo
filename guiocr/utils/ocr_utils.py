@@ -29,6 +29,7 @@ except Exception:
 # 显示结果
 from PIL import Image, ImageDraw, ImageFont
 import os
+import glob
 
 
 class OCR_qt(QObject):
@@ -146,6 +147,128 @@ class OCR_qt(QObject):
         os.makedirs(save_folder, exist_ok=True)
         image.save(os.path.join(save_folder, 'result_ocr.jpg'))
         return image
+
+
+class BatchOCRProcessor(QObject):
+    """批量OCR处理类"""
+    # 信号定义
+    progressUpdated = pyqtSignal(int, int)  # 当前进度, 总任务数
+    imageProcessed = pyqtSignal(str, list, float)  # 图片路径, 识别结果, 置信度
+    imageError = pyqtSignal(str, str)  # 图片路径, 错误信息
+    batchComplete = pyqtSignal(dict)  # 完整结果
+    sendResult = pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super(BatchOCRProcessor, self).__init__(parent)
+        self.image_paths = []
+        self.use_angle = True
+        self.cls = True
+        self.default_lan = "ch"
+        self.ocrinfer = None
+        self.is_running = False
+
+    def set_task(self, image_paths, use_angle=True, cls=True, lan="ch"):
+        """设置批量任务"""
+        self.image_paths = image_paths
+        self.use_angle = use_angle
+        self.cls = cls
+        self.default_lan = lan
+        self._load_model()
+
+    def _load_model(self):
+        """加载OCR模型"""
+        print("加载批量处理模型......")
+        det_dir = f"models/det/{self.default_lan}"
+        rec_dir = f"models/cls/{self.default_lan}"
+
+        if not (os.path.isdir(det_dir) and os.path.exists(os.path.join(det_dir, "inference.yml"))):
+            print(f"PaddleOCR: model directory '{det_dir}' missing or incomplete; will not pass det_model_dir (PaddleOCR may download models).")
+            det_dir = None
+        if not (os.path.isdir(rec_dir) and os.path.exists(os.path.join(rec_dir, "inference.yml"))):
+            print(f"PaddleOCR: model directory '{rec_dir}' missing or incomplete; will not pass rec_model_dir (PaddleOCR may download models).")
+            rec_dir = None
+
+        params = dict(
+            use_angle_cls=self.use_angle,
+            use_gpu=1,
+            lang=self.default_lan,
+        )
+        if det_dir:
+            params["det_model_dir"] = det_dir
+        if rec_dir:
+            params["rec_model_dir"] = rec_dir
+
+        # Try to initialize PaddleOCR; if it complains about unknown args, remove them and retry
+        while True:
+            try:
+                self.ocrinfer = PaddleOCR(**params)
+                break
+            except ValueError as e:
+                msg = str(e)
+                if "Unknown argument:" in msg:
+                    name = msg.split("Unknown argument:")[-1].strip()
+                    if name in params:
+                        print(f"PaddleOCR: removing unsupported argument '{name}' and retrying...")
+                        params.pop(name, None)
+                        continue
+                # re-raise if it's not an unknown-argument error we can handle
+                raise
+
+        print("批量处理模型加载完成......")
+
+    def start(self):
+        """开始批量处理"""
+        self.is_running = True
+        self.process_batch()
+
+    def stop(self):
+        """停止批量处理"""
+        self.is_running = False
+
+    def process_batch(self):
+        """处理批量任务"""
+        total = len(self.image_paths)
+        results = {}
+        errors = {}
+
+        for idx, img_path in enumerate(self.image_paths):
+            if not self.is_running:
+                break
+
+            # 更新进度
+            self.progressUpdated.emit(idx + 1, total)
+
+            try:
+                # 执行OCR识别
+                result = self.ocrinfer.ocr(img_path)
+                
+                # 计算平均置信度
+                if result:
+                    scores = [line[1][1] for line in result]
+                    avg_confidence = sum(scores) / len(scores)
+                else:
+                    avg_confidence = 0.0
+
+                # 发送处理结果
+                self.imageProcessed.emit(img_path, result, avg_confidence)
+                results[img_path] = {"result": result, "confidence": avg_confidence}
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"处理图片 {img_path} 时出错: {error_msg}")
+                self.imageError.emit(img_path, error_msg)
+                errors[img_path] = error_msg
+
+        # 发送完成信号
+        final_result = {
+            "results": results,
+            "errors": errors,
+            "total": total,
+            "success": len(results),
+            "failed": len(errors)
+        }
+        self.batchComplete.emit(final_result)
+        self.is_running = False
 
 
 # def ocr(img_path='./imgs/11.jpg',use_angle=True,cls=True, lan="ch"):

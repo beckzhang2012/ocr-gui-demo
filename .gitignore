@@ -10,6 +10,8 @@ venv/
 ENV/
 env/
 batch_ocr_env/
+clean_env/
+original_env/
 
 # IDE / Editor
 .vscode/

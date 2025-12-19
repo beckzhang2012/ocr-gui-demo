@@ -9,6 +9,14 @@ Created time:2021/12/1 20:33
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 from PyQt5.QtGui import QPixmap, QImage
 
+# 在导入 PaddleOCR 之前修改 BASE_DIR，避免中文用户名问题
+import paddleocr
+# 设置 PaddleOCR 模型缓存目录到项目内
+import os
+model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+os.makedirs(model_dir, exist_ok=True)
+paddleocr.BASE_DIR = model_dir
+
 from paddleocr import PaddleOCR
 # 兼容不同 paddleocr 版本：有些版本未在顶级导出 draw_ocr 等函数
 try:
@@ -28,7 +36,6 @@ except Exception:
 
 # 显示结果
 from PIL import Image, ImageDraw, ImageFont
-import os
 
 
 class OCR_qt(QObject):
@@ -42,6 +49,10 @@ class OCR_qt(QObject):
         self.default_lan = "ch"
         self.result = []
         self.ocrinfer = None
+        # 设置 PaddleOCR 模型缓存目录到项目内（避免中文用户名问题）
+        import os
+        self.model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'models')
+        os.makedirs(self.model_dir, exist_ok=True)
 
 
 
@@ -65,10 +76,16 @@ class OCR_qt(QObject):
                 print(f"PaddleOCR: model directory '{rec_dir}' missing or incomplete; will not pass rec_model_dir (PaddleOCR may download models).")
                 rec_dir = None
 
+            # 临时修改 PaddleOCR 的 BASE_DIR，避免中文用户名问题
+            import paddleocr
+            paddleocr.BASE_DIR = self.model_dir
+            os.makedirs(self.model_dir, exist_ok=True)
+            
             params = dict(
                 use_angle_cls=use_angle,
-                use_gpu=1,
+                use_gpu=False,
                 lang=lan,
+                ocr_version='PP-OCRv3'
             )
             if det_dir:
                 params["det_model_dir"] = det_dir

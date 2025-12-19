@@ -98,6 +98,63 @@ class OCR_qt(QObject):
             print("No img_path input.")
             return
 
+
+class BatchOCRProcessor(QObject):
+    """批量OCR处理类"""
+    progressUpdated = pyqtSignal(int, int)  # 当前进度, 总数量
+    imageProcessed = pyqtSignal(str, list)  # 图片路径, OCR结果
+    imageError = pyqtSignal(str, str)  # 图片路径, 错误信息
+    batchComplete = pyqtSignal(dict, dict)  # 处理结果, 错误信息
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.ocr_model = None
+        self.is_processing = False
+    
+    def load_model(self, lang="ch"):
+        """加载OCR模型"""
+        try:
+            self.ocr_model = PaddleOCR(
+                use_angle_cls=True,
+                lang=lang
+            )
+            return True
+        except Exception as e:
+            print(f"加载OCR模型失败: {e}")
+            return False
+    
+    def process_batch(self, image_paths, lang="ch"):
+        """批量处理图片"""
+        if not self.ocr_model and not self.load_model(lang):
+            return
+            
+        self.is_processing = True
+        results = {}
+        errors = {}
+        total = len(image_paths)
+        
+        for idx, img_path in enumerate(image_paths):
+            try:
+                print(f"正在处理: {img_path}")
+                result = self.ocr_model.ocr(img_path, cls=True)
+                results[img_path] = result
+                self.imageProcessed.emit(img_path, result)
+            except Exception as e:
+                print(f"处理失败 {img_path}: {e}")
+                errors[img_path] = str(e)
+                self.imageError.emit(img_path, str(e))
+            
+            # 更新进度
+            progress = idx + 1
+            self.progressUpdated.emit(progress, total)
+        
+        self.is_processing = False
+        self.batchComplete.emit(results, errors)
+    
+    def stop_processing(self):
+        """停止处理"""
+        self.is_processing = False
+
         # 用于线程启动
         # call ocr without passing deprecated/unsupported kwargs like 'cls'
         self.ocr(self.img_path)

@@ -21,7 +21,10 @@ from guiocr import utils
 from guiocr.config import get_config
 from guiocr.widgets.main_window_ui import Ui_MainWindow
 from guiocr.widgets import *
+from guiocr.widgets.correction_dict_dialog import CorrectionDictDialog
+from guiocr.widgets.text_compare_dialog import TextCompareDialog
 from guiocr.utils import *
+from guiocr.utils.text_postprocessor import TextPostProcessor
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 here = os.path.dirname(os.path.abspath(__file__))
@@ -91,6 +94,20 @@ class MainWindow(QMainWindow):
         # self._ui.btnBrightness.setIcon(self.getIcon("brightness_grey"))
         # self._ui.btnStartProcess.setIcon(self.getIcon("play_white"))
 
+        # 初始化文本后处理器
+        self.postprocessor = TextPostProcessor()
+        
+        # 添加智能后处理相关按钮
+        self.btnPostProcess = QtWidgets.QPushButton("智能后处理")
+        self.btnPostProcess.setMinimumSize(QtCore.QSize(150, 35))
+        self.btnPostProcess.clicked.connect(self.start_post_process)
+        self._ui.horizontalLayout_4.addWidget(self.btnPostProcess)
+        
+        self.btnDictManager = QtWidgets.QPushButton("纠错词典")
+        self.btnDictManager.setMinimumSize(QtCore.QSize(100, 35))
+        self.btnDictManager.clicked.connect(self.open_dict_manager)
+        self._ui.horizontalLayout_4.addWidget(self.btnDictManager)
+
         # 按钮响应函数
         self._ui.btnOpenImg.clicked.connect(self.openFile)
         self._ui.btnOpenDir.clicked.connect(self.openDirDialog)
@@ -105,6 +122,18 @@ class MainWindow(QMainWindow):
         # self._ui.listWidgetResults.itemSelectionChanged.connect(self.onItemResultClicked)
         self._ui.listWidgetResults.clear()
         # self.addResultItem(shape=None,txt="test3")
+        
+        # 添加对比和还原按钮到结果标签页
+        self.btnCompare = QtWidgets.QPushButton("对比查看")
+        self.btnCompare.clicked.connect(self.compare_text)
+        self._ui.verticalLayout_6.addWidget(self.btnCompare)
+        
+        self.btnRestore = QtWidgets.QPushButton("还原原始")
+        self.btnRestore.clicked.connect(self.restore_original)
+        self._ui.verticalLayout_6.addWidget(self.btnRestore)
+        
+        # 存储原始识别结果
+        self.original_results = []
 
         # 控件布局
         """左侧：区域标签列表"""
@@ -167,12 +196,91 @@ class MainWindow(QMainWindow):
 
         # actions
         self._initActions()
+        self._initPostProcessActions()
 
         # status bar
         self.statusBar().showMessage(str(self.tr("%s started.")) % __appname__)
         self.statusBar().show()
 
         # TODO 快捷键设置
+    
+    def _initPostProcessActions(self):
+        """初始化后处理相关的操作"""
+        pass
+    
+    def start_post_process(self):
+        """开始智能后处理"""
+        if not self.result:
+            QtWidgets.QMessageBox.warning(self, "警告", "请先进行OCR识别")
+            return
+        
+        # 保存原始结果
+        self.original_results = [line[1][0] for line in self.result]
+        
+        # 批量处理文本
+        processed_texts = self.postprocessor.batch_process(self.original_results)
+        
+        # 更新界面显示
+        self._ui.listWidgetResults.clear()
+        for text in processed_texts:
+            item = QtWidgets.QListWidgetItem()
+            item.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable | 
+                         QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsUserCheckable | 
+                         QtCore.Qt.ItemIsEnabled)
+            item.setCheckState(QtCore.Qt.Checked)
+            item.setText(text)
+            self._ui.listWidgetResults.addItem(item)
+        
+        QtWidgets.QMessageBox.information(self, "完成", "智能后处理已完成")
+    
+    def open_dict_manager(self):
+        """打开纠错词典管理器"""
+        dialog = CorrectionDictDialog(self)
+        dialog.exec_()
+    
+    def compare_text(self):
+        """对比查看原始文本和处理后的文本"""
+        selected_items = self._ui.listWidgetResults.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "警告", "请选择要对比的文本")
+            return
+        
+        # 获取当前选中的文本
+        current_text = selected_items[0].text()
+        
+        # 找到对应的原始文本
+        if self.original_results:
+            index = self._ui.listWidgetResults.row(selected_items[0])
+            if index < len(self.original_results):
+                original_text = self.original_results[index]
+            else:
+                original_text = current_text
+        else:
+            original_text = current_text
+        
+        # 打开对比对话框
+        dialog = TextCompareDialog(original_text, self)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            processed_text = dialog.get_processed_text()
+            selected_items[0].setText(processed_text)
+    
+    def restore_original(self):
+        """还原为原始识别结果"""
+        if not self.original_results:
+            QtWidgets.QMessageBox.warning(self, "警告", "没有可还原的原始结果")
+            return
+        
+        self._ui.listWidgetResults.clear()
+        for text in self.original_results:
+            item = QtWidgets.QListWidgetItem()
+            item.setFlags(QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable | 
+                         QtCore.Qt.ItemIsDragEnabled | QtCore.Qt.ItemIsUserCheckable | 
+                         QtCore.Qt.ItemIsEnabled)
+            item.setCheckState(QtCore.Qt.Checked)
+            item.setText(text)
+            self._ui.listWidgetResults.addItem(item)
+        
+        QtWidgets.QMessageBox.information(self, "完成", "已还原为原始识别结果")
 
     def _initActions(self):
         # Actions

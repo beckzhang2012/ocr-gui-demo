@@ -22,6 +22,8 @@ from guiocr.config import get_config
 from guiocr.widgets.main_window_ui import Ui_MainWindow
 from guiocr.widgets import *
 from guiocr.utils import *
+from guiocr.template import TemplateManager, Template, RegionTemplate
+from guiocr.widgets.template_manager_dialog import TemplateManagerDialog
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 here = os.path.dirname(os.path.abspath(__file__))
@@ -168,10 +170,16 @@ class MainWindow(QMainWindow):
         # actions
         self._initActions()
 
+        # 模板管理
+        self.template_manager = TemplateManager()
+        
         # status bar
         self.statusBar().showMessage(str(self.tr("%s started.")) % __appname__)
         self.statusBar().show()
 
+        # 添加模板管理按钮和菜单项
+        self._initTemplateActions()
+        
         # TODO 快捷键设置
 
     def _initActions(self):
@@ -542,6 +550,105 @@ class MainWindow(QMainWindow):
 
         # self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
 
+    def _initTemplateActions(self):
+        """初始化模板管理相关的菜单项和按钮"""
+        action = functools.partial(utils.newAction, self)
+        
+        # 模板管理菜单项
+        manageTemplates = action(
+            self.tr("&模板管理"),
+            self.showTemplateManager,
+            icon="objects",
+            tip=self.tr("管理OCR识别区域模板"),
+        )
+        
+        # 绘制模板区域菜单项
+        drawTemplateRegions = action(
+            self.tr("&绘制模板区域"),
+            self.toggleDrawTemplateMode,
+            icon="edit",
+            tip=self.tr("在图片上绘制模板区域"),
+            enabled=False,
+        )
+        
+        # 清除模板区域菜单项
+        clearTemplateRegions = action(
+            self.tr("&清除模板区域"),
+            self.clearTemplateRegions,
+            icon="cancel",
+            tip=self.tr("清除当前图片上的所有模板区域"),
+            enabled=False,
+        )
+        
+        # 保存为模板菜单项
+        saveAsTemplate = action(
+            self.tr("&保存为模板"),
+            self.saveAsTemplate,
+            icon="save",
+            tip=self.tr("将当前模板区域保存为新模板"),
+            enabled=False,
+        )
+        
+        # 添加到actions字典
+        self.actions = utils.struct(
+            **self.actions.__dict__,
+            manageTemplates=manageTemplates,
+            drawTemplateRegions=drawTemplateRegions,
+            clearTemplateRegions=clearTemplateRegions,
+            saveAsTemplate=saveAsTemplate,
+        )
+        
+        # 创建模板管理菜单
+        template_menu = self.menuBar().addMenu(self.tr("&模板"))
+        utils.addActions(template_menu, (
+            self.actions.manageTemplates,
+            self.actions.drawTemplateRegions,
+            self.actions.clearTemplateRegions,
+            self.actions.saveAsTemplate,
+        ))
+
+    def showTemplateManager(self):
+        """显示模板管理对话框"""
+        dialog = TemplateManagerDialog(parent=self, template_manager=self.template_manager)
+        dialog.templateApplied.connect(self.onTemplateApplied)
+        dialog.exec_()
+        
+    def onTemplateApplied(self, template_name):
+        """当模板被应用时的处理函数"""
+        template = self.template_manager.get_template(template_name)
+        if template:
+            self.canvas.apply_template(template)
+            QtWidgets.QMessageBox.information(self, "成功", f"模板 '{template_name}' 已应用")
+        
+    def toggleDrawTemplateMode(self):
+        """切换模板区域绘制模式"""
+        current_mode = self.canvas.get_drawing_mode()
+        new_mode = not current_mode
+        self.canvas.set_drawing_mode(new_mode)
+        self.actions.drawTemplateRegions.setChecked(new_mode)
+        
+    # 在 loadFile 方法中启用模板功能
+    # 我们需要在加载图片后启用相关的模板菜单项
+        
+    def clearTemplateRegions(self):
+        """清除当前图片上的所有模板区域"""
+        self.canvas.clear_regions()
+        self.actions.clearTemplateRegions.setEnabled(False)
+        self.actions.saveAsTemplate.setEnabled(False)
+        
+    def saveAsTemplate(self):
+        """将当前模板区域保存为新模板"""
+        regions = self.canvas.get_template_regions()
+        if not regions:
+            QtWidgets.QMessageBox.warning(self, "警告", "没有可保存的模板区域")
+            return
+            
+        template_name, ok = QtWidgets.QInputDialog.getText(self, "保存模板", "请输入模板名称:")
+        if ok and template_name:
+            template = Template(name=template_name, regions=regions)
+            self.template_manager.add_template(template)
+            QtWidgets.QMessageBox.information(self, "成功", f"模板 '{template_name}' 已保存")
+
     def getIcon(self, iconName: str):
         self.icons_dir = os.path.join(here, "./icons")
         path = os.path.join(":/", self.icons_dir, f"{iconName}.png")
@@ -811,6 +918,11 @@ class MainWindow(QMainWindow):
         self.paintCanvas()
         self.addRecentFile(self.filename)
         self.toggleActions(True)
+        # 启用模板相关菜单项
+        self.actions.manageTemplates.setEnabled(True)
+        self.actions.drawTemplateRegions.setEnabled(True)
+        self.actions.clearTemplateRegions.setEnabled(True)
+        self.actions.saveAsTemplate.setEnabled(True)
         self.canvas.setFocus()
         self.status(str(self.tr("Loaded %s")) % os.path.basename(str(filename)))
         return True

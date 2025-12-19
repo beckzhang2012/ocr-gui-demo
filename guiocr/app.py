@@ -22,6 +22,8 @@ from guiocr.config import get_config
 from guiocr.widgets.main_window_ui import Ui_MainWindow
 from guiocr.widgets import *
 from guiocr.utils import *
+from guiocr.template import RegionTemplate, TemplateManager
+from guiocr.widgets.template_manager_dialog import TemplateManagerDialog
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 here = os.path.dirname(os.path.abspath(__file__))
@@ -60,6 +62,10 @@ class MainWindow(QMainWindow):
         self.imageList = []
         self.result = []
         self.suffix = ".json"
+        
+        # 模板管理
+        self.template_manager = TemplateManager()
+        self.current_template = None
         self.scroll_values = {
             Qt.Horizontal: {},
             Qt.Vertical: {},
@@ -90,6 +96,19 @@ class MainWindow(QMainWindow):
         self._ui.btnSaveAll.setIcon(self.getIcon("done_grey"))
         # self._ui.btnBrightness.setIcon(self.getIcon("brightness_grey"))
         # self._ui.btnStartProcess.setIcon(self.getIcon("play_white"))
+        
+        # 添加模板管理按钮
+        self._ui.btnTemplateManager = QtWidgets.QPushButton("模板管理")
+        self._ui.btnTemplateManager.setObjectName("btnTemplateManager")
+        self._ui.verticalLayout_5.addWidget(self._ui.btnTemplateManager)
+        
+        self._ui.btnSaveTemplate = QtWidgets.QPushButton("保存模板")
+        self._ui.btnSaveTemplate.setObjectName("btnSaveTemplate")
+        self._ui.verticalLayout_5.addWidget(self._ui.btnSaveTemplate)
+        
+        # 连接模板按钮信号
+        self._ui.btnTemplateManager.clicked.connect(self.open_template_manager)
+        self._ui.btnSaveTemplate.clicked.connect(self.save_current_as_template)
 
         # 按钮响应函数
         self._ui.btnOpenImg.clicked.connect(self.openFile)
@@ -173,6 +192,48 @@ class MainWindow(QMainWindow):
         self.statusBar().show()
 
         # TODO 快捷键设置
+        
+    def open_template_manager(self):
+        """打开模板管理对话框"""
+        dialog = TemplateManagerDialog(self.template_manager, self)
+        dialog.templateApplied.connect(self.apply_template)
+        dialog.exec_()
+    
+    def save_current_as_template(self):
+        """将当前画布上的形状保存为新模板"""
+        if not self.canvas.shapes:
+            QtWidgets.QMessageBox.warning(self, "警告", "画布上没有可保存的区域")
+            return
+        
+        name, ok = QtWidgets.QInputDialog.getText(self, "保存模板", "请输入模板名称:")
+        if ok and name.strip():
+            if self.template_manager.get_template(name.strip()):
+                QtWidgets.QMessageBox.warning(self, "警告", "模板名称已存在")
+                return
+            
+            template = RegionTemplate(name=name.strip())
+            for shape in self.canvas.shapes:
+                template.add_region(shape)
+            
+            self.template_manager.add_template(template)
+            QtWidgets.QMessageBox.information(self, "成功", "模板保存成功")
+    
+    def apply_template(self, template_name):
+        """应用指定名称的模板到当前画布"""
+        template = self.template_manager.get_template(template_name)
+        if not template:
+            return
+        
+        # 清空当前画布的形状
+        self.canvas.shapes = []
+        
+        # 添加模板中的区域
+        for shape in template.get_shapes():
+            self.canvas.shapes.append(shape)
+        
+        self.canvas.update()
+        self.current_template = template
+        self.statusBar().showMessage(f"已应用模板: {template_name}")
 
     def _initActions(self):
         # Actions
@@ -830,29 +891,42 @@ class MainWindow(QMainWindow):
         if load:
             self.InfoMessage("提示", "首次执行需要加载模型，点击OK后耐心等待！")
 
+        # 检查是否有应用的模板
+        if self.current_template:
+            print(f"使用模板: {self.current_template.name}")
+            # 准备区域数据
+            regions = []
+            for region in self.current_template.regions:
+                # 从points中提取坐标
+                points = region['points']
+                if points:
+                    # 计算最小和最大坐标以获取矩形区域
+                    xs = [p[0] for p in points]
+                    ys = [p[1] for p in points]
+                    x1 = int(min(xs))
+                    y1 = int(min(ys))
+                    x2 = int(max(xs))
+                    y2 = int(max(ys))
+                    regions.append((x1, y1, x2, y2))
+            # 保存区域信息
+            self.current_regions = regions
+        else:
+            self.current_regions = None
 
         # TODO:多线程处理+进度条
 
         if selectBtnName == "checkBox_ocr":
             # 文本检测+识别
-            self.processor.set_task(self.filename, cls=True, lan=self._ui.comboBoxLanguage.currentText(), load=load)
+            self.processor.set_task(self.filename, cls=True, lan=self._ui.comboBoxLanguage.currentText(), load=load, regions=self.current_regions)
             self._ui.btnStartProcess.setText("解析中...")
-            # self.result = ocr(self.filename, cls=True, lan=self._ui.comboBoxLanguage.currentText())
-            # self.add_ocr_results(self.result)
         elif selectBtnName == "checkBox_det":
             # TODO:文本检测
-            self.processor.set_task(self.filename, cls=False, lan=self._ui.comboBoxLanguage.currentText(), load=load)
-            # self.result = ocr(self.filename, cls=False, lan=self._ui.comboBoxLanguage.currentText())
-            # self.add_ocr_results(self.result)
+            self.processor.set_task(self.filename, cls=False, lan=self._ui.comboBoxLanguage.currentText(), load=load, regions=self.current_regions)
         elif selectBtnName == "checkBox_recog":
             # TODO:文本识别
             self.errorMessage("提示", "当前版本暂不支持")
-            # self.result = ocr(self.filename, cls=True, lan=self._ui.comboBoxLanguage.currentText())
-            # self.add_ocr_results(self.result)
         elif selectBtnName == "checkBox_layoutparser":
             self.errorMessage("提示", "当前版本暂不支持")
-            # self.result = structure_analysis(self.filename,self.output_dir)
-            # self.add_structure_results(self.result)
 
         self.workThread.start()
 

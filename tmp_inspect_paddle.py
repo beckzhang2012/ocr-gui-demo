@@ -1,22 +1,16 @@
-from inspect import signature
-from paddleocr import PaddleOCR
-print('PaddleOCR class:', PaddleOCR)
-print('PaddleOCR.__init__ signature:', signature(PaddleOCR.__init__))
-print('PaddleOCR.predict signature:')
-try:
-    print(signature(PaddleOCR.predict))
-except Exception as e:
-    print('could not inspect predict:', e)
+import os
+import paddleocr.tools.infer.utility as utility
 
-# inspect ocr method signature as well
-print('\nPaddleOCR.ocr signature:')
-try:
-    print(signature(PaddleOCR.ocr))
-except Exception as e:
-    print('could not inspect ocr:', e)
+print('Utility module path:', utility.__file__)
+print('\n--- Functions in utility ---')
+print([f for f in dir(utility) if not f.startswith('_')])
 
-# also list parameters of ocr method if present
-print('\nPaddleOCR methods containing ocr:')
-for n in dir(PaddleOCR):
-    if 'ocr' in n.lower():
-        print(' -', n)
+# 查看 create_predictor 函数的源代码
+import inspect
+print('\n--- Source code of create_predictor ---')
+print(inspect.getsource(utility.create_predictor))
+
+# 查看 TextDetector 类
+import paddleocr.tools.infer.predict_det as predict_det
+print('\n--- TextDetector class ---')
+print(inspect.getsource(predict_det.TextDetector))

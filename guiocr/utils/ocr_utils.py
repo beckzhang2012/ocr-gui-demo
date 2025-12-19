@@ -34,46 +34,38 @@ import os
 class OCR_qt(QObject):
     sendResult = pyqtSignal(list)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, use_gpu: bool = False, use_angle_cls: bool = True):
         super(OCR_qt, self).__init__(parent)
         self.img_path = ""
-        self.use_angle = True
+        self.use_angle = use_angle_cls
         self.cls = True
         self.default_lan = "ch"
         self.result = []
         self.ocrinfer = None
+        self.use_gpu = use_gpu
+        self.use_paddlex = False  # 禁用 PaddleX 相关功能，避免模型文件缺失错误
 
 
 
-    def set_task(self, img_path='./imgs/11.jpg', use_angle=True, cls=True, lan="ch", load=True):
+    def set_task(self, img_path='./imgs/11.jpg', use_angle=True, cls=True, lan="ch", load=True, regions=None):
         self.img_path = img_path
         self.use_angle = use_angle
         self.cls = cls
         self.default_lan = lan
+        self.regions = regions
 
         if load:
             print("加载模型......")
-            # Only pass explicit model dirs if they exist and look complete;
-            # otherwise let PaddleOCR handle downloading / locating models itself.
-            det_dir = f"models/det/{lan}"
-            rec_dir = f"models/cls/{lan}"
-
-            if not (os.path.isdir(det_dir) and os.path.exists(os.path.join(det_dir, "inference.yml"))):
-                print(f"PaddleOCR: model directory '{det_dir}' missing or incomplete; will not pass det_model_dir (PaddleOCR may download models).")
-                det_dir = None
-            if not (os.path.isdir(rec_dir) and os.path.exists(os.path.join(rec_dir, "inference.yml"))):
-                print(f"PaddleOCR: model directory '{rec_dir}' missing or incomplete; will not pass rec_model_dir (PaddleOCR may download models).")
-                rec_dir = None
-
+            # 使用本地模型路径，避免系统路径问题
             params = dict(
-                use_angle_cls=use_angle,
-                use_gpu=1,
+                use_angle_cls=use_angle,  # PaddleOCR 2.x 使用 use_angle_cls
+                use_gpu=0,  # 禁用 GPU
                 lang=lan,
+                det_model_dir='models/det/ch',  # PaddleOCR 2.x 使用 det_model_dir
+                rec_model_dir='models/rec/ch',  # PaddleOCR 2.x 使用 rec_model_dir
+                cls_model_dir='models/cls',  # PaddleOCR 2.x 使用 cls_model_dir
+                enable_mkldnn=False
             )
-            if det_dir:
-                params["det_model_dir"] = det_dir
-            if rec_dir:
-                params["rec_model_dir"] = rec_dir
 
             # Try to initialize PaddleOCR; if it complains about unknown args, remove them and retry
             while True:
@@ -100,24 +92,72 @@ class OCR_qt(QObject):
 
         # 用于线程启动
         # call ocr without passing deprecated/unsupported kwargs like 'cls'
-        self.ocr(self.img_path)
+        self.ocr(self.img_path, regions=self.regions)
 
-    def ocr(self, img_path='./imgs/11.jpg', use_angle=True, cls=True, lan="ch", use_gpu=1):
+    def ocr(self, img_path='./imgs/11.jpg', use_angle=True, cls=True, lan="ch", use_gpu=1, regions=None):
+        # 避免使用 PaddleX 功能，直接使用 PaddleOCR 核心识别
         self.img_path = img_path
         self.default_lan = lan
 
-        # PaddleOCR.predict no longer accepts 'cls' keyword in newer versions;
-        # call without it to avoid TypeError
-        try:
-            result = self.ocrinfer.ocr(img_path)
-        except TypeError:
-            # fallback: try with explicit safe kwargs if needed in older versions
-            result = self.ocrinfer.ocr(img_path)
+        if regions is None or len(regions) == 0:
+            # 全图识别
+            try:
+                result = self.ocrinfer.ocr(img_path)
+            except TypeError:
+                result = self.ocrinfer.ocr(img_path)
+            self.result = result
+        else:
+            # 区域识别
+            import cv2
+            import numpy as np
+            from PIL import Image
+            import io
+            
+            image = cv2.imread(img_path)
+            result = []
+            
+            for i, region in enumerate(regions):
+                # 裁剪区域
+                x1, y1, x2, y2 = region
+                cropped = image[y1:y2, x1:x2]
+                
+                # 将裁剪后的图像转换为临时文件或内存对象
+                _, buffer = cv2.imencode('.jpg', cropped)
+                img_bytes = io.BytesIO(buffer)
+                
+                # 使用Pillow读取
+                pil_img = Image.open(img_bytes)
+                
+                # 临时保存到内存
+                temp_buffer = io.BytesIO()
+                pil_img.save(temp_buffer, format='JPEG')
+                temp_buffer.seek(0)
+                
+                # 对裁剪区域进行OCR
+                try:
+                    region_result = self.ocrinfer.ocr(temp_buffer)
+                except Exception as e:
+                    print(f"Error processing region {i}: {e}")
+                    region_result = []
+                
+                # 调整坐标
+                if region_result:
+                    for line in region_result:
+                        if line:
+                            # 调整边界框坐标
+                            adjusted_box = []
+                            for point in line[0]:
+                                adjusted_point = (point[0] + x1, point[1] + y1)
+                                adjusted_box.append(adjusted_point)
+                            # 保持文本和分数不变
+                            adjusted_line = [adjusted_box, line[1]]
+                            result.append(adjusted_line)
+            
+            self.result = result
 
-        self.result = result
-        for line in result:
+        for line in self.result:
             print(line)
-        self.sendResult.emit(result)
+        self.sendResult.emit(self.result)
 
     def vis_ocr_result(self, save_folder='./output/'):
         image = Image.open(self.img_path).convert('RGB')

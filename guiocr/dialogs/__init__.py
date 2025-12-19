@@ -1,0 +1,1 @@
+from .dictionary_manager import DictionaryManagerDialog

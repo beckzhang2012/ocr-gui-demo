@@ -3,7 +3,7 @@ from PyQt5 import QtCore
 from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QListWidget, QListWidgetItem, QAbstractItemView, QWidget, QApplication, \
     QButtonGroup, QPushButton, QTextEdit, QRadioButton, QCheckBox, QLabel, QSpacerItem, QMessageBox, QGroupBox, \
-    QVBoxLayout, QHBoxLayout
+    QVBoxLayout, QHBoxLayout, QComboBox, QGridLayout
 from PyQt5.QtCore import QObject, QThread, QSettings, pyqtSignal, pyqtSlot, Qt
 from .logger import logger
 from .shape import Shape
@@ -71,6 +71,12 @@ class MainWindow(QMainWindow):
         self.processor.moveToThread(self.workThread)
         self.processor.sendResult.connect(self.onReceiveResults)
         self.workThread.started.connect(self.processor.start)
+        
+        # 智能后处理
+        self.post_processor = OCRPostProcessor()
+        self.processed_results = None
+        self.current_text_type = "corrected"  # original, cleaned, corrected
+        self._addPostProcessingUI()
 
         # 单选按钮组
         self.checkBtnGroup = QButtonGroup(self)
@@ -864,6 +870,9 @@ class MainWindow(QMainWindow):
 
         # 检测+识别结果
         self.add_ocr_results(result)
+        
+        # 应用智能后处理
+        self.processOCRResultsWithPostProcessing(result)
 
         self._ui.btnStartProcess.setText("解析完成")
         # TODO：其他分析结果
@@ -1603,6 +1612,117 @@ class MainWindow(QMainWindow):
             self.actions.deleteFile.setEnabled(True)
         else:
             self.actions.deleteFile.setEnabled(False)
+
+    def _addPostProcessingUI(self):
+        """添加智能后处理相关的UI控件"""
+        # 在右侧文本标签页中添加后处理控件
+        layout = QVBoxLayout()
+        
+        # 后处理控制区域
+        control_group = QGroupBox("智能后处理")
+        control_layout = QHBoxLayout()
+        
+        # 文本类型选择
+        self.text_type_combo = QComboBox()
+        self.text_type_combo.addItems(["原始文本", "去噪文本", "纠错文本"])
+        self.text_type_combo.setCurrentText("纠错文本")
+        self.text_type_combo.currentTextChanged.connect(self.onTextTypeChanged)
+        control_layout.addWidget(QLabel("文本类型:"))
+        control_layout.addWidget(self.text_type_combo)
+        
+        # 应用/还原按钮
+        self.btn_apply_correction = QPushButton("应用纠错")
+        self.btn_apply_correction.clicked.connect(self.applyCorrection)
+        control_layout.addWidget(self.btn_apply_correction)
+        
+        self.btn_restore_original = QPushButton("还原原始")
+        self.btn_restore_original.clicked.connect(self.restoreOriginal)
+        control_layout.addWidget(self.btn_restore_original)
+        
+        # 自定义词典按钮
+        self.btn_manage_dictionary = QPushButton("管理词典")
+        self.btn_manage_dictionary.clicked.connect(self.manageDictionary)
+        control_layout.addWidget(self.btn_manage_dictionary)
+        
+        control_group.setLayout(control_layout)
+        layout.addWidget(control_group)
+        
+        # 对比查看区域
+        compare_group = QGroupBox("结果对比")
+        compare_layout = QHBoxLayout()
+        
+        self.original_text_edit = QTextEdit()
+        self.original_text_edit.setReadOnly(True)
+        self.original_text_edit.setPlaceholderText("原始识别结果")
+        compare_layout.addWidget(QLabel("原始结果:"))
+        compare_layout.addWidget(self.original_text_edit)
+        
+        self.corrected_text_edit = QTextEdit()
+        self.corrected_text_edit.setPlaceholderText("纠错后结果")
+        compare_layout.addWidget(QLabel("纠错结果:"))
+        compare_layout.addWidget(self.corrected_text_edit)
+        
+        compare_group.setLayout(compare_layout)
+        layout.addWidget(compare_group)
+        
+        # 将布局添加到右侧标签页
+        if hasattr(self._ui, 'tabWidget'):
+            # 查找或创建后处理标签页
+            post_process_tab = QWidget()
+            post_process_tab.setLayout(layout)
+            self._ui.tabWidget.addTab(post_process_tab, "智能后处理")
+    
+    def onTextTypeChanged(self, text_type):
+        """文本类型选择变化时更新显示"""
+        type_map = {"原始文本": "original", "去噪文本": "cleaned", "纠错文本": "corrected"}
+        self.current_text_type = type_map.get(text_type, "corrected")
+        self.updateTextDisplay()
+    
+    def updateTextDisplay(self):
+        """更新文本显示"""
+        if self.processed_results:
+            if self.current_text_type == "original":
+                text = self.processed_results.get("original_text", "")
+            elif self.current_text_type == "cleaned":
+                text = self.processed_results.get("cleaned_text", "")
+            else:
+                text = self.processed_results.get("corrected_text", "")
+            
+            # 更新对比查看
+            self.original_text_edit.setPlainText(self.processed_results.get("original_text", ""))
+            self.corrected_text_edit.setPlainText(self.processed_results.get("corrected_text", ""))
+    
+    def applyCorrection(self):
+        """应用纠错结果"""
+        if self.processed_results:
+            corrected_text = self.processed_results.get("corrected_text", "")
+            # 这里可以将纠错结果应用到主结果列表
+            print("应用纠错结果:", corrected_text)
+    
+    def restoreOriginal(self):
+        """还原原始结果"""
+        if self.processed_results:
+            original_text = self.processed_results.get("original_text", "")
+            print("还原原始结果:", original_text)
+    
+    def manageDictionary(self):
+        """打开自定义词典管理窗口"""
+        from guiocr.dialogs import DictionaryManagerDialog
+        dialog = DictionaryManagerDialog(self.post_processor, self)
+        dialog.exec_()
+    
+    def processOCRResultsWithPostProcessing(self, ocr_results):
+        """使用智能后处理处理OCR结果"""
+        # 提取所有识别文本
+        all_text = "\n".join([result[1][0] for result in ocr_results])
+        
+        # 进行后处理
+        self.processed_results = self.post_processor.process(all_text)
+        
+        # 更新显示
+        self.updateTextDisplay()
+        
+        return self.processed_results
 
     def toggleActions(self, value=True):
         """Enable/Disable widgets which depend on an opened image."""

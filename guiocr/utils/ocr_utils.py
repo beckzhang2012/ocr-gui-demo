@@ -65,15 +65,15 @@ class OCR_qt(QObject):
                 print(f"PaddleOCR: model directory '{rec_dir}' missing or incomplete; will not pass rec_model_dir (PaddleOCR may download models).")
                 rec_dir = None
 
+            # 只传递 PaddleOCR 3.x 推荐参数，自动下载模型
+            # 禁用文档预处理功能，避免加载 PP-LCNet_x1_0_doc_ori 模型
             params = dict(
                 use_angle_cls=use_angle,
-                use_gpu=1,
                 lang=lan,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
             )
-            if det_dir:
-                params["det_model_dir"] = det_dir
-            if rec_dir:
-                params["rec_model_dir"] = rec_dir
+            # 不再传递 det_model_dir、rec_model_dir，完全自动下载
 
             # Try to initialize PaddleOCR; if it complains about unknown args, remove them and retry
             while True:

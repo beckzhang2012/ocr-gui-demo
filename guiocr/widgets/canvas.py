@@ -88,6 +88,12 @@ class Canvas(QtWidgets.QWidget):
         # Set widget options.
         self.setMouseTracking(True)
         self.setFocusPolicy(QtCore.Qt.WheelFocus)
+        
+        # 模板区域相关
+        self.template_regions = []  # 存储模板区域
+        self.drawing_mode = False  # 是否处于绘图模式
+        self._drawing_start = None  # 绘制起点
+        self._drawing_current = None  # 当前绘制点
 
     def fillDrawing(self):
         return self._fill_drawing
@@ -164,6 +170,366 @@ class Canvas(QtWidgets.QWidget):
 
     def editing(self):
         return self.mode == self.EDIT
+        
+    def set_drawing_mode(self, enabled: bool):
+        """设置绘图模式"""
+        self.drawing_mode = enabled
+        
+    def get_template_regions(self):
+        """获取模板区域列表"""
+        return self.template_regions
+        
+    def clear_regions(self):
+        """清除所有区域"""
+        self.template_regions.clear()
+        self.update()
+        
+    def apply_template(self, template):
+        """应用模板到当前画布"""
+        self.clear_regions()
+        for region in template.regions:
+            self.template_regions.append(region)
+        self.update()
+        
+    def add_template_region(self, region):
+        """添加模板区域"""
+        self.template_regions.append(region)
+        self.update()
+        
+    def mousePressEvent(self, ev):
+        if self.drawing_mode:
+            if ev.button() == QtCore.Qt.LeftButton:
+                if QT5:
+                    pos = self.transformPos(ev.localPos())
+                else:
+                    pos = self.transformPos(ev.posF())
+                self._drawing_start = pos
+                self._drawing_current = pos
+            return
+        
+        if QT5:
+            pos = self.transformPos(ev.localPos())
+        else:
+            pos = self.transformPos(ev.posF())
+        if ev.button() == QtCore.Qt.LeftButton:
+            if self.drawing():
+                if self.current:
+                    # Add point to existing shape.
+                    if self.createMode == "polygon":
+                        self.current.addPoint(self.line[1])
+                        self.line[0] = self.current[-1]
+                        if self.current.isClosed():
+                            self.finalise()
+                    elif self.createMode in ["rectangle", "circle", "line"]:
+                        assert len(self.current.points) == 1
+                        self.current.points = self.line.points
+                        self.finalise()
+                    elif self.createMode == "linestrip":
+                        self.current.addPoint(self.line[1])
+                        self.line[0] = self.current[-1]
+                        if int(ev.modifiers()) == QtCore.Qt.ControlModifier:
+                            self.finalise()
+                elif not self.outOfPixmap(pos):
+                    # Create new shape.
+                    self.current = Shape(shape_type=self.createMode)
+                    self.current.addPoint(pos)
+                    if self.createMode == "point":
+                        self.finalise()
+                    else:
+                        if self.createMode == "circle":
+                            self.current.shape_type = "circle"
+                        self.line.points = [pos, pos]
+                        self.setHiding()
+                        self.drawingPolygon.emit(True)
+                        self.update()
+            elif self.editing():
+                if self.selectedEdge():
+                    self.addPointToEdge()
+                elif (
+                    self.selectedVertex()
+                    and int(ev.modifiers()) == QtCore.Qt.ShiftModifier
+                ):
+                    # Delete point if: left-click + SHIFT on a point
+                    self.removeSelectedPoint()
+
+                group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+                self.selectShapePoint(pos, multiple_selection_mode=group_mode)
+                self.prevPoint = pos
+                self.repaint()
+        elif ev.button() == QtCore.Qt.RightButton and self.editing():
+            group_mode = int(ev.modifiers()) == QtCore.Qt.ControlModifier
+            if not self.selectedShapes or (
+                self.hShape is not None
+                and self.hShape not in self.selectedShapes
+            ):
+                self.selectShapePoint(pos, multiple_selection_mode=group_mode)
+                self.repaint()
+            self.prevPoint = pos
+            
+    def mouseMoveEvent(self, ev):
+        if self.drawing_mode and self._drawing_start:
+            if QT5:
+                pos = self.transformPos(ev.localPos())
+            else:
+                pos = self.transformPos(ev.posF())
+            self._drawing_current = pos
+            self.update()
+            return
+        
+        """Update line with last point and current coordinates."""
+        try:
+            if QT5:
+                pos = self.transformPos(ev.localPos())
+            else:
+                pos = self.transformPos(ev.posF())
+        except AttributeError:
+            return
+
+        self.prevMovePoint = pos
+        self.restoreCursor()
+
+        # Polygon drawing.
+        if self.drawing():
+            self.line.shape_type = self.createMode
+
+            self.overrideCursor(CURSOR_DRAW)
+            if not self.current:
+                return
+
+            if self.outOfPixmap(pos):
+                # Don't allow the user to draw outside the pixmap.
+                # Project the point to the pixmap's edges.
+                pos = self.intersectionPoint(self.current[-1], pos)
+            elif (
+                self.snapping
+                and len(self.current) > 1
+                and self.createMode == "polygon"
+                and self.closeEnough(pos, self.current[0])
+            ):
+                # Attract line to starting point and
+                # colorise to alert the user.
+                pos = self.current[0]
+                self.overrideCursor(CURSOR_POINT)
+                self.current.highlightVertex(0, Shape.NEAR_VERTEX)
+            if self.createMode in ["polygon", "linestrip"]:
+                self.line[0] = self.current[-1]
+                self.line[1] = pos
+            elif self.createMode == "rectangle":
+                self.line.points = [self.current[0], pos]
+                self.line.close()
+            elif self.createMode == "circle":
+                self.line.points = [self.current[0], pos]
+                self.line.shape_type = "circle"
+            elif self.createMode == "line":
+                self.line.points = [self.current[0], pos]
+                self.line.close()
+            elif self.createMode == "point":
+                self.line.points = [self.current[0]]
+                self.line.close()
+            self.repaint()
+            self.current.highlightClear()
+            return
+
+        # Polygon copy moving.
+        if QtCore.Qt.RightButton & ev.buttons():
+            if self.selectedShapesCopy and self.prevPoint:
+                self.overrideCursor(CURSOR_MOVE)
+                self.boundedMoveShapes(self.selectedShapesCopy, pos)
+                self.repaint()
+            elif self.selectedShapes:
+                self.selectedShapesCopy = [
+                    s.copy() for s in self.selectedShapes
+                ]
+                self.repaint()
+            return
+
+        # Polygon/Vertex moving.
+        if QtCore.Qt.LeftButton & ev.buttons():
+            if self.selectedVertex():
+                self.boundedMoveVertex(pos)
+                self.repaint()
+                self.movingShape = True
+            elif self.selectedShapes and self.prevPoint:
+                self.overrideCursor(CURSOR_MOVE)
+                self.boundedMoveShapes(self.selectedShapes, pos)
+                self.repaint()
+                self.movingShape = True
+            return
+
+        # Just hovering over the canvas, 2 possibilities:
+        # - Highlight shapes
+        # - Highlight vertex
+        # Update shape/vertex fill and tooltip value accordingly.
+        self.setToolTip(self.tr("Image"))
+        for shape in reversed([s for s in self.shapes if self.isVisible(s)]):
+            # Look for a nearby vertex to highlight. If that fails,
+            # check if we happen to be inside a shape.
+            index = shape.nearestVertex(pos, self.epsilon / self.scale)
+            index_edge = shape.nearestEdge(pos, self.epsilon / self.scale)
+            if index is not None:
+                if self.selectedVertex():
+                    self.hShape.highlightClear()
+                self.prevhVertex = self.hVertex = index
+                self.prevhShape = self.hShape = shape
+                self.prevhEdge = self.hEdge
+                self.hEdge = None
+                shape.highlightVertex(index, shape.MOVE_VERTEX)
+                self.overrideCursor(CURSOR_POINT)
+                self.setToolTip(self.tr("Click & drag to move point"))
+                self.setStatusTip(self.toolTip())
+                self.update()
+                break
+            elif index_edge is not None and shape.canAddPoint():
+                if self.selectedVertex():
+                    self.hShape.highlightClear()
+                self.prevhVertex = self.hVertex
+                self.hVertex = None
+                self.prevhShape = self.hShape = shape
+                self.prevhEdge = self.hEdge = index_edge
+                self.overrideCursor(CURSOR_POINT)
+                self.setToolTip(self.tr("Click to create point"))
+                self.setStatusTip(self.toolTip())
+                self.update()
+                break
+            elif shape.containsPoint(pos):
+                if self.selectedVertex():
+                    self.hShape.highlightClear()
+                self.prevhVertex = self.hVertex
+                self.hVertex = None
+                self.prevhShape = self.hShape = shape
+                self.prevhEdge = self.hEdge
+                self.hEdge = None
+                self.setToolTip(
+                    self.tr("Click & drag to move shape '%s'") % shape.label
+                )
+                self.setStatusTip(self.toolTip())
+                self.overrideCursor(CURSOR_GRAB)
+                self.update()
+                break
+        else:  # Nothing found, clear highlights, reset state.
+            self.unHighlight()
+        self.vertexSelected.emit(self.hVertex is not None)
+        
+    def mouseReleaseEvent(self, ev):
+        if self.drawing_mode and self._drawing_start and self._drawing_current:
+            # 创建新的模板区域
+            x1 = min(self._drawing_start.x(), self._drawing_current.x())
+            y1 = min(self._drawing_start.y(), self._drawing_current.y())
+            x2 = max(self._drawing_start.x(), self._drawing_current.x())
+            y2 = max(self._drawing_start.y(), self._drawing_current.y())
+            
+            if x2 > x1 and y2 > y1:  # 确保区域有一定大小
+                region_name = f"区域 {len(self.template_regions) + 1}"
+                # 创建区域对象
+                class RegionTemplate:
+                    def __init__(self, name, x, y, width, height):
+                        self.name = name
+                        self.x = x
+                        self.y = y
+                        self.width = width
+                        self.height = height
+                
+                region = RegionTemplate(name=region_name, x=x1, y=y1, width=x2 - x1, height=y2 - y1)
+                self.template_regions.append(region)
+                
+            self._drawing_start = None
+            self._drawing_current = None
+            self.update()
+            return
+        
+        if ev.button() == QtCore.Qt.RightButton:
+            menu = self.menus[len(self.selectedShapesCopy) > 0]
+            self.restoreCursor()
+            if (
+                not menu.exec_(self.mapToGlobal(ev.pos()))
+                and self.selectedShapesCopy
+            ):
+                # Cancel the move by deleting the shadow copy.
+                self.selectedShapesCopy = []
+                self.repaint()
+        elif ev.button() == QtCore.Qt.LeftButton:
+            if self.editing():
+                if (
+                    self.hShape is not None
+                    and self.hShapeIsSelected
+                    and not self.movingShape
+                ):
+                    self.selectionChanged.emit(
+                        [x for x in self.selectedShapes if x != self.hShape]
+                    )
+
+        if self.movingShape and self.hShape:
+            index = self.shapes.index(self.hShape)
+            if (
+                self.shapesBackups[-1][index].points
+                != self.shapes[index].points
+            ):
+                self.storeShapes()
+                self.shapeMoved.emit()
+
+            self.movingShape = False
+            
+    def paintEvent(self, event):
+        if not self.pixmap:
+            return super(Canvas, self).paintEvent(event)
+
+        p = self._painter
+        p.begin(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setRenderHint(QtGui.QPainter.HighQualityAntialiasing)
+        p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform)
+
+        p.scale(self.scale, self.scale)
+        p.translate(self.offsetToCenter())
+
+        p.drawPixmap(0, 0, self.pixmap)
+        Shape.scale = self.scale
+        for shape in self.shapes:
+            if (shape.selected or not self._hideBackround) and self.isVisible(
+                shape
+            ):
+                shape.fill = shape.selected or shape == self.hShape
+                shape.paint(p)
+        if self.current:
+            self.current.paint(p)
+            self.line.paint(p)
+        if self.selectedShapesCopy:
+            for s in self.selectedShapesCopy:
+                s.paint(p)
+        
+        # 绘制模板区域
+        for region in self.template_regions:
+            pen = QtGui.QPen(QtCore.Qt.green, 2)
+            p.setPen(pen)
+            p.drawRect(region.x, region.y, region.width, region.height)
+            # 绘制区域名称
+            font = p.font()
+            font.setPointSize(10)
+            p.setFont(font)
+            p.drawText(region.x + 5, region.y + 15, region.name)
+            
+        # 绘制正在绘制的模板区域
+        if self.drawing_mode and self._drawing_start and self._drawing_current:
+            pen = QtGui.QPen(QtCore.Qt.blue, 2, QtCore.Qt.DashLine)
+            p.setPen(pen)
+            x1 = min(self._drawing_start.x(), self._drawing_current.x())
+            y1 = min(self._drawing_start.y(), self._drawing_current.y())
+            x2 = max(self._drawing_start.x(), self._drawing_current.x())
+            y2 = max(self._drawing_start.y(), self._drawing_current.y())
+            p.drawRect(x1, y1, x2 - x1, y2 - y1)
+
+        if (
+            self.fillDrawing()
+            and self.createMode == "polygon"
+            and self.current is not None
+            and len(self.current.points) >= 2
+        ):
+            drawing_shape = self.current.copy()
+            drawing_shape.addPoint(self.line[1])
+            drawing_shape.fill = True
+            drawing_shape.paint(p)
+
+        p.end()
 
     def setEditing(self, value=True):
         self.mode = self.EDIT if value else self.CREATE
@@ -631,6 +997,17 @@ class Canvas(QtWidgets.QWidget):
         if self.selectedShapesCopy:
             for s in self.selectedShapesCopy:
                 s.paint(p)
+        
+        # 绘制模板区域
+        for region in self.template_regions:
+            pen = QtGui.QPen(QtCore.Qt.green, 2)
+            p.setPen(pen)
+            p.drawRect(region.x, region.y, region.width, region.height)
+            # 绘制区域名称
+            font = p.font()
+            font.setPointSize(10)
+            p.setFont(font)
+            p.drawText(region.x + 5, region.y + 15, region.name)
 
         if (
             self.fillDrawing()

@@ -3,7 +3,7 @@ from PyQt5 import QtCore
 from PyQt5 import QtWidgets
 from PyQt5.QtWidgets import QMainWindow, QListWidget, QListWidgetItem, QAbstractItemView, QWidget, QApplication, \
     QButtonGroup, QPushButton, QTextEdit, QRadioButton, QCheckBox, QLabel, QSpacerItem, QMessageBox, QGroupBox, \
-    QVBoxLayout, QHBoxLayout
+    QVBoxLayout, QHBoxLayout, QProgressDialog, QFileDialog, QLineEdit, QComboBox
 from PyQt5.QtCore import QObject, QThread, QSettings, pyqtSignal, pyqtSlot, Qt
 from .logger import logger
 from .shape import Shape
@@ -22,6 +22,8 @@ from guiocr.config import get_config
 from guiocr.widgets.main_window_ui import Ui_MainWindow
 from guiocr.widgets import *
 from guiocr.utils import *
+from guiocr.utils.batch_ocr import BatchOCRWorker
+from guiocr.utils.export_utils import ExportUtils
 
 LABEL_COLORMAP = imgviz.label_colormap(value=200)
 here = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +73,21 @@ class MainWindow(QMainWindow):
         self.processor.moveToThread(self.workThread)
         self.processor.sendResult.connect(self.onReceiveResults)
         self.workThread.started.connect(self.processor.start)
+        
+        # 批量处理线程
+        self.batch_work_thread = QThread()
+        self.batch_processor = BatchOCRWorker()
+        self.batch_processor.moveToThread(self.batch_work_thread)
+        self.batch_processor.progress_updated.connect(self.on_batch_progress_updated)
+        self.batch_processor.batch_complete.connect(self.on_batch_complete)
+        self.batch_processor.error_occurred.connect(self.on_batch_error)
+        self.batch_work_thread.started.connect(self.batch_processor.start)
+        
+        # 批量处理数据
+        self.batch_results = []
+        self.batch_stats = {}
+        self.current_batch_page = 0
+        self.batch_page_size = 20
 
         # 单选按钮组
         self.checkBtnGroup = QButtonGroup(self)
@@ -105,6 +122,12 @@ class MainWindow(QMainWindow):
         # self._ui.listWidgetResults.itemSelectionChanged.connect(self.onItemResultClicked)
         self._ui.listWidgetResults.clear()
         # self.addResultItem(shape=None,txt="test3")
+        
+        # 添加批量处理相关按钮
+        self.add_batch_process_buttons()
+        self.add_export_buttons()
+        self.add_batch_search_filter()
+        self.add_batch_pagination()
 
         # 控件布局
         """左侧：区域标签列表"""
@@ -172,8 +195,279 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(str(self.tr("%s started.")) % __appname__)
         self.statusBar().show()
 
+        # 批量处理进度对话框
+        self.progress_dialog = None
+
         # TODO 快捷键设置
 
+    def add_batch_process_buttons(self):
+        """添加批量处理按钮"""
+        # 创建批量处理按钮
+        self.btnBatchProcess = QPushButton("批量处理")
+        self.btnBatchProcess.setMinimumSize(QtCore.QSize(150, 35))
+        self.btnBatchProcess.setStyleSheet('''QPushButton {
+background-color: rgb(0, 160, 230);
+border-radius: 5px;
+height: 28;
+text-align: center;
+text-decoration: none;
+font-size: 16px;
+margin: 2px 2px;
+color: white;
+}
+
+QPushButton:hover {
+background-color: white;
+border: 2px solid rgb(0, 160, 230);
+color: black
+}
+
+QPushButton:pressed {
+background-color: rgba(0, 0, 255, 40);
+}''')
+        self.btnBatchProcess.clicked.connect(self.start_batch_process)
+        
+        # 将按钮添加到任务配置组
+        self._ui.horizontalLayout_4.addWidget(self.btnBatchProcess)
+        
+    def add_export_buttons(self):
+        """添加导出按钮"""
+        self.btnExportCSV = QPushButton("导出CSV")
+        self.btnExportCSV.clicked.connect(lambda: self.export_results("csv"))
+        
+        self.btnExportExcel = QPushButton("导出Excel")
+        self.btnExportExcel.clicked.connect(lambda: self.export_results("excel"))
+        
+        # 将按钮添加到结果标签页
+        self._ui.verticalLayout_6.addWidget(self.btnExportCSV)
+        self._ui.verticalLayout_6.addWidget(self.btnExportExcel)
+        
+    def add_batch_search_filter(self):
+        """添加批量搜索和筛选功能"""
+        # 搜索框
+        self.searchEdit = QLineEdit()
+        self.searchEdit.setPlaceholderText("搜索识别文本...")
+        self.searchEdit.textChanged.connect(self.on_search_text_changed)
+        
+        # 筛选下拉框
+        self.filterCombo = QComboBox()
+        self.filterCombo.addItems(["所有结果", "成功", "失败"])
+        self.filterCombo.currentIndexChanged.connect(self.on_filter_changed)
+        
+        # 添加到结果标签页
+        self._ui.verticalLayout_6.insertWidget(0, self.searchEdit)
+        self._ui.verticalLayout_6.insertWidget(1, self.filterCombo)
+        
+    def add_batch_pagination(self):
+        """添加批量结果分页功能"""
+        # 分页控件
+        self.pageInfoLabel = QLabel("第 0 / 0 页")
+        self.btnPrevPage = QPushButton("上一页")
+        self.btnNextPage = QPushButton("下一页")
+        
+        self.btnPrevPage.clicked.connect(self.prev_batch_page)
+        self.btnNextPage.clicked.connect(self.next_batch_page)
+        
+        # 布局
+        pagination_layout = QHBoxLayout()
+        pagination_layout.addWidget(self.btnPrevPage)
+        pagination_layout.addWidget(self.pageInfoLabel)
+        pagination_layout.addWidget(self.btnNextPage)
+        
+        pagination_widget = QWidget()
+        pagination_widget.setLayout(pagination_layout)
+        
+        self._ui.verticalLayout_6.addWidget(pagination_widget)
+        
+    def start_batch_process(self):
+        """开始批量处理"""
+        # 选择文件夹
+        folder_path = QFileDialog.getExistingDirectory(self, "选择图片文件夹", self.lastOpenDir)
+        if not folder_path:
+            return
+        
+        # 收集图片文件
+        image_files = BatchOCRWorker.collect_image_files(folder_path)
+        if not image_files:
+            QMessageBox.information(self, "提示", "文件夹中没有找到支持的图片文件")
+            return
+        
+        # 确认开始处理
+        reply = QMessageBox.question(self, "确认", f"将处理 {len(image_files)} 张图片，是否开始？",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 初始化进度对话框
+        self.progress_dialog = QProgressDialog("正在批量处理图片...", "取消", 0, len(image_files), self)
+        self.progress_dialog.setWindowTitle("批量处理")
+        self.progress_dialog.setWindowModality(Qt.ApplicationModal)
+        self.progress_dialog.setMinimumDuration(0)
+        
+        # 设置批量处理任务
+        self.batch_processor.set_task(image_files, self._ui.comboBoxLanguage.currentText())
+        
+        # 启动线程
+        self.batch_work_thread.start()
+        
+        # 显示进度对话框
+        self.progress_dialog.exec_()
+        
+    def on_batch_progress_updated(self, current, total, filename):
+        """批量处理进度更新"""
+        if self.progress_dialog:
+            self.progress_dialog.setValue(current)
+            self.progress_dialog.setLabelText(f"正在处理: {filename}\n({current}/{total})")
+            
+    def on_batch_complete(self, results, stats):
+        """批量处理完成"""
+        self.batch_work_thread.quit()
+        self.batch_results = results
+        self.batch_stats = stats
+        
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
+        # 显示统计信息
+        QMessageBox.information(self, "批量处理完成", \
+            f"处理完成！\n总文件数: {stats['total']}\n成功: {stats['success']}\n失败: {stats['failed']}")
+        
+        # 显示第一页结果
+        self.current_batch_page = 0
+        self.display_batch_results()
+        
+    def on_batch_error(self, error_msg, filename):
+        """批量处理错误"""
+        logger.error(f"处理文件 {filename} 时出错: {error_msg}")
+        
+    def display_batch_results(self):
+        """显示批量处理结果"""
+        self._ui.listWidgetResults.clear()
+        
+        # 应用筛选
+        filtered_results = self.get_filtered_results()
+        
+        # 计算总页数
+        total_pages = (len(filtered_results) + self.batch_page_size - 1) // self.batch_page_size
+        
+        # 更新分页信息
+        self.pageInfoLabel.setText(f"第 {self.current_batch_page + 1} / {total_pages} 页")
+        self.btnPrevPage.setEnabled(self.current_batch_page > 0)
+        self.btnNextPage.setEnabled(self.current_batch_page < total_pages - 1)
+        
+        # 获取当前页数据
+        start_idx = self.current_batch_page * self.batch_page_size
+        end_idx = min(start_idx + self.batch_page_size, len(filtered_results))
+        current_page_results = filtered_results[start_idx:end_idx]
+        
+        # 显示结果
+        for item in current_page_results:
+            filename = item['filename']
+            status = item['status']
+            
+            if status == 'success':
+                # 显示识别到的文本
+                try:
+                    text = "\n".join([line[1][0] for line in item['result']]) if item['result'] else ""
+                    list_item = QListWidgetItem(f"{filename} (成功)\n{text}")
+                    list_item.setData(Qt.UserRole, item)
+                    self._ui.listWidgetResults.addItem(list_item)
+                except:
+                    list_item = QListWidgetItem(f"{filename} (成功但结果格式异常)")
+                    list_item.setData(Qt.UserRole, item)
+                    self._ui.listWidgetResults.addItem(list_item)
+            else:
+                # 显示失败信息
+                error = item.get('error', '未知错误')
+                list_item = QListWidgetItem(f"{filename} (失败): {error}")
+                list_item.setData(Qt.UserRole, item)
+                self._ui.listWidgetResults.addItem(list_item)
+        
+        # 切换到结果标签页
+        self._ui.tabWidgetResult.setCurrentIndex(1)
+        
+    def get_filtered_results(self):
+        """获取筛选后的结果"""
+        filtered = self.batch_results
+        
+        # 状态筛选
+        filter_status = self.filterCombo.currentText()
+        if filter_status == "成功":
+            filtered = [r for r in filtered if r['status'] == 'success']
+        elif filter_status == "失败":
+            filtered = [r for r in filtered if r['status'] == 'failed']
+        
+        # 文本搜索
+        search_text = self.searchEdit.text().lower()
+        if search_text:
+            search_filtered = []
+            for item in filtered:
+                if item['status'] == 'success' and item['result']:
+                    try:
+                        for line in item['result']:
+                            if search_text in line[1][0].lower():
+                                search_filtered.append(item)
+                                break
+                    except:
+                        pass
+                elif item['status'] == 'failed':
+                    error = item.get('error', '').lower()
+                    if search_text in error or search_text in item['filename'].lower():
+                        search_filtered.append(item)
+            filtered = search_filtered
+        
+        return filtered
+        
+    def on_search_text_changed(self, text):
+        """搜索文本变化时更新结果"""
+        self.current_batch_page = 0
+        self.display_batch_results()
+        
+    def on_filter_changed(self, index):
+        """筛选条件变化时更新结果"""
+        self.current_batch_page = 0
+        self.display_batch_results()
+        
+    def prev_batch_page(self):
+        """上一页"""
+        if self.current_batch_page > 0:
+            self.current_batch_page -= 1
+            self.display_batch_results()
+            
+    def next_batch_page(self):
+        """下一页"""
+        filtered_results = self.get_filtered_results()
+        total_pages = (len(filtered_results) + self.batch_page_size - 1) // self.batch_page_size
+        
+        if self.current_batch_page < total_pages - 1:
+            self.current_batch_page += 1
+            self.display_batch_results()
+            
+    def export_results(self, export_format):
+        """导出批量处理结果"""
+        if not self.batch_results:
+            QMessageBox.warning(self, "警告", "没有可导出的结果")
+            return
+        
+        # 选择保存路径
+        if export_format == "csv":
+            file_path, _ = QFileDialog.getSaveFileName(self, "导出为CSV", "", "CSV文件 (*.csv)")
+        else:
+            file_path, _ = QFileDialog.getSaveFileName(self, "导出为Excel", "", "Excel文件 (*.xlsx)")
+        
+        if not file_path:
+            return
+        
+        try:
+            success = ExportUtils.export(self.batch_results, file_path, export_format)
+            if success:
+                QMessageBox.information(self, "成功", f"结果已成功导出到: {file_path}")
+            else:
+                QMessageBox.error(self, "错误", "导出失败")
+        except Exception as e:
+            QMessageBox.error(self, "错误", f"导出失败: {str(e)}")
+        
     def _initActions(self):
         # Actions
         action = functools.partial(utils.newAction, self)

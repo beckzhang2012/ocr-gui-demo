@@ -9,6 +9,7 @@ __pycache__/
 venv/
 ENV/
 env/
+batch_ocr_env/
 
 # IDE / Editor
 .vscode/
@@ -46,3 +47,9 @@ models/
 # Others
 *.bak
 *.tmp
+temp_check.py
+test_batch_ocr.py
+simple_batch_ocr.py
+requirements_final.txt
+requirements_stable.txt
+tmp_inspect_paddle.py

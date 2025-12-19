@@ -6,7 +6,7 @@ Created time:2021/12/2 17:31
 import logging
 import sys
 
-from PyQt5.Qt import PYQT_VERSION_STR as QT_VERSION
+from PyQt5.QtCore import QT_VERSION_STR as QT_VERSION
 # from qtpy import QT_VERSION
 
 # QT_VERSION=PYQT_VERSION_STR

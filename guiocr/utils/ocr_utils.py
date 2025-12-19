@@ -53,12 +53,13 @@ class OCR_qt(QObject):
 
         if load:
             print("加载模型......")
-            self.ocrinfer = PaddleOCR(
-                use_angle_cls=use_angle,
-                lang=lan,
-                det_model_dir=f"models/det/{lan}",
-                rec_model_dir=f"models/cls/{lan}"
-            )  # need to run only once to download and load model into memory
+            self.ocrinfer = PaddleOCR(use_angle_cls=use_angle,
+                            use_gpu=1,
+                            lang=lan,
+                            gpu_mem=2048,
+                            det_model_dir=f"models/det/{lan}",
+                            rec_model_dir=f"models/cls/{lan}"
+                            )  # need to run only once to download and load model into memory
 
             print("模型加载完成......")
 
@@ -68,13 +69,21 @@ class OCR_qt(QObject):
             return
 
         # 用于线程启动
-        self.ocr(self.img_path, self.use_angle, self.cls, self.default_lan, use_gpu=1)
+        # call ocr without passing deprecated/unsupported kwargs like 'cls'
+        self.ocr(self.img_path)
 
     def ocr(self, img_path='./imgs/11.jpg', use_angle=True, cls=True, lan="ch", use_gpu=1):
         self.img_path = img_path
         self.default_lan = lan
 
-        result = self.ocrinfer.ocr(img_path, cls=cls)
+        # PaddleOCR.predict no longer accepts 'cls' keyword in newer versions;
+        # call without it to avoid TypeError
+        try:
+            result = self.ocrinfer.ocr(img_path)
+        except TypeError:
+            # fallback: try with explicit safe kwargs if needed in older versions
+            result = self.ocrinfer.ocr(img_path)
+
         self.result = result
         for line in result:
             print(line)

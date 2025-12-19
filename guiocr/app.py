@@ -869,30 +869,102 @@ class MainWindow(QMainWindow):
         # TODO：其他分析结果
 
     def add_ocr_results(self, result):
+        """Normalize and add OCR results to UI.
+
+        Supports both older PaddleOCR list-of-lines format and newer
+        dict-based document pipeline format.
+        """
         self._ui.listWidgetResults.clear()
 
-        result = result[0]
-        boxes = [line[0] for line in result]
-        txts = [line[1][0] for line in result]
+        boxes = []
+        txts = []
+
+        # Normalize result which can be:
+        # - older format: result = [ [ [box, (text, score)], ... ], ... ]
+        # - newer format: result = [ { 'rec_polys': ..., 'rec_texts': ..., ... }, ... ]
+        data = None
+        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+            data = result[0]
+        elif isinstance(result, dict):
+            data = result
+        elif isinstance(result, list):
+            # older format: take first page
+            try:
+                page = result[0]
+                boxes = [line[0] for line in page]
+                txts = [line[1][0] for line in page]
+            except Exception:
+                boxes = []
+                txts = []
+
+        if data is not None:
+            # Prefer recognized polygons and texts
+            if "rec_polys" in data and "rec_texts" in data:
+                boxes = data.get("rec_polys", [])
+                txts = data.get("rec_texts", [])
+            elif "rec_texts" in data and "rec_polys" not in data and "dt_polys" in data:
+                boxes = data.get("dt_polys", [])
+                txts = data.get("rec_texts", [])
+            elif "dt_polys" in data and "rec_texts" in data:
+                boxes = data.get("dt_polys", [])
+                txts = data.get("rec_texts", [])
+            else:
+                # best-effort fallback: try to find arrays that look like boxes/texts
+                boxes = data.get("rec_polys", data.get("dt_polys", []))
+                txts = data.get("rec_texts", [])
+
+        # Ensure types are list-like and lengths match
+        try:
+            if not hasattr(boxes, "__len__"):
+                boxes = list(boxes)
+        except Exception:
+            boxes = []
+        try:
+            if not hasattr(txts, "__len__"):
+                txts = list(txts)
+        except Exception:
+            txts = [""] * len(boxes)
+
+        # Truncate to smallest length when appropriate
+        if txts:
+            n = min(len(boxes), len(txts))
+            boxes = boxes[:n]
+            txts = txts[:n]
+        else:
+            txts = [""] * len(boxes)
+
         shapes = []
-        for i in range(len(boxes)):
-            x1 = boxes[i][0][0]  # min(boxes[i][0][0],boxes[i][1][0])
-            y1 = boxes[i][0][1]  # min(boxes[i][0][1],boxes[i][1][1])
-            x2 = boxes[i][2][0]  # max(boxes[i][0][0], boxes[i][1][0])
-            y2 = boxes[i][2][1]  # max(boxes[i][0][1], boxes[i][1][1])
+        for i, box in enumerate(boxes):
+            try:
+                # box is expected to be iterable of points
+                p0 = box[0]
+                p2 = box[2]
+                x1 = int(p0[0])
+                y1 = int(p0[1])
+                x2 = int(p2[0])
+                y2 = int(p2[1])
+            except Exception:
+                # fallback: compute bounding box from all points
+                try:
+                    pts = [(int(p[0]), int(p[1])) for p in box]
+                    xs = [pt[0] for pt in pts]
+                    ys = [pt[1] for pt in pts]
+                    x1, y1 = min(xs), min(ys)
+                    x2, y2 = max(xs), max(ys)
+                except Exception:
+                    # give up for this item
+                    continue
+
             label = f"({x1},{y1}),({x2},{y2})"
-            shape = Shape(
-                label=label,
-                shape_type="rectangle",
-                group_id=i,
-            )
+            shape = Shape(label=label, shape_type="rectangle", group_id=i)
             shape.addPoint(QtCore.QPointF(x1, y1))
             shape.addPoint(QtCore.QPointF(x2, y2))
             shapes.append(shape)
-            # shape.close()
-            txt = txts[i]
+
+            txt = txts[i] if i < len(txts) else ""
             self.addLabel(shape)
             self.addResultItem(shape, txt)
+
         self.loadShapes(shapes)
 
     def add_structure_results(self, result):
@@ -1141,8 +1213,13 @@ class MainWindow(QMainWindow):
         self.setScroll(orientation, value)
 
     def setScroll(self, orientation, value):
-        self.scrollBars[orientation].setValue(value)
-        self.scroll_values[orientation][self.filename] = value
+        # Ensure scroll value is integer (QScrollBar.setValue requires int)
+        try:
+            value_int = int(round(value))
+        except Exception:
+            value_int = int(value)
+        self.scrollBars[orientation].setValue(value_int)
+        self.scroll_values[orientation][self.filename] = value_int
 
     def setZoom(self, value):
         self.actions.fitWidth.setChecked(False)

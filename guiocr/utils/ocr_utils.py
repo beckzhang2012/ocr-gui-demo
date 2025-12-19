@@ -53,13 +53,43 @@ class OCR_qt(QObject):
 
         if load:
             print("加载模型......")
-            self.ocrinfer = PaddleOCR(use_angle_cls=use_angle,
-                            use_gpu=1,
-                            lang=lan,
-                            gpu_mem=2048,
-                            det_model_dir=f"models/det/{lan}",
-                            rec_model_dir=f"models/cls/{lan}"
-                            )  # need to run only once to download and load model into memory
+            # Only pass explicit model dirs if they exist and look complete;
+            # otherwise let PaddleOCR handle downloading / locating models itself.
+            det_dir = f"models/det/{lan}"
+            rec_dir = f"models/cls/{lan}"
+
+            if not (os.path.isdir(det_dir) and os.path.exists(os.path.join(det_dir, "inference.yml"))):
+                print(f"PaddleOCR: model directory '{det_dir}' missing or incomplete; will not pass det_model_dir (PaddleOCR may download models).")
+                det_dir = None
+            if not (os.path.isdir(rec_dir) and os.path.exists(os.path.join(rec_dir, "inference.yml"))):
+                print(f"PaddleOCR: model directory '{rec_dir}' missing or incomplete; will not pass rec_model_dir (PaddleOCR may download models).")
+                rec_dir = None
+
+            params = dict(
+                use_angle_cls=use_angle,
+                use_gpu=1,
+                lang=lan,
+            )
+            if det_dir:
+                params["det_model_dir"] = det_dir
+            if rec_dir:
+                params["rec_model_dir"] = rec_dir
+
+            # Try to initialize PaddleOCR; if it complains about unknown args, remove them and retry
+            while True:
+                try:
+                    self.ocrinfer = PaddleOCR(**params)
+                    break
+                except ValueError as e:
+                    msg = str(e)
+                    if "Unknown argument:" in msg:
+                        name = msg.split("Unknown argument:")[-1].strip()
+                        if name in params:
+                            print(f"PaddleOCR: removing unsupported argument '{name}' and retrying...")
+                            params.pop(name, None)
+                            continue
+                    # re-raise if it's not an unknown-argument error we can handle
+                    raise
 
             print("模型加载完成......")
 
